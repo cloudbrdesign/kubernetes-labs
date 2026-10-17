@@ -1,0 +1,19 @@
+# A team-a pod asking for one GPU (quota test).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: team-a-gpu-1
+  namespace: team-a
+  labels: {lab: lab01}
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36.1
+    command: ["sh", "-c", "echo 'pretending to train'; sleep 3600"]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule

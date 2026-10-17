@@ -1,0 +1,14 @@
+# Team A may hold at most one GPU. For extended resources only `requests.` quota items are allowed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gpu-quota
+  namespace: team-a
+spec:
+  hard:
+    requests.nvidia.com/gpu: "1"
