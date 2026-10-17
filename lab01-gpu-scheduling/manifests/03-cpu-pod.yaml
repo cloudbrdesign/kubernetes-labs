@@ -1,0 +1,15 @@
+# A pod that needs no GPU and has no toleration. After the GPU node is tainted, it must land elsewhere.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-pod
+  labels: {lab: lab01}
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36.1
+    command: ["sh", "-c", "echo 'web traffic'; sleep 3600"]
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
