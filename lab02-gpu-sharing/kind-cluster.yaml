@@ -1,0 +1,16 @@
+# Lab 2 cluster: one control plane, one worker. CDI on (how DRA drivers hand devices to containers),
+# plus the two DRA feature gates that steps 5 and 6 use.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  DRAExtendedResource: true
+  DRAConsumableCapacity: true
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri"]
+    enable_cdi = true
+nodes:
+- role: control-plane
+  image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+- role: worker
+  image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
