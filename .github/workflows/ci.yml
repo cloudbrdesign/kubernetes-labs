@@ -13,6 +13,11 @@ jobs:
       - name: Validate Kubernetes manifests (kubeconform)
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
-          ./kubeconform -summary -strict -kubernetes-version 1.33.0 lab*/manifests/*.yaml
+          ./kubeconform -summary -strict -kubernetes-version 1.37.0 lab*/manifests/*.yaml
       - name: Lint shell scripts (shellcheck)
         run: shellcheck lab*/scripts/*.sh
+      - name: Check the cloud helpers (Python syntax, CloudFormation lint)
+        run: |
+          python -m py_compile lab*/aws/*.py
+          pip install --quiet cfn-lint
+          cfn-lint lab*/aws/*.yaml

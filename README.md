@@ -9,8 +9,8 @@ Independent course. Not affiliated with or endorsed by NVIDIA.
 
 | Mode | Runs on | Needs |
 |---|---|---|
-| **Laptop (default)** | your machine | Docker (Docker Desktop or Colima), kind, kubectl |
-| **Cloud GPU (later labs, optional)** | a GPU instance in the cloud | a cloud account and a budget alarm; marked clearly in the lab that needs it |
+| **Laptop (default)** | your machine | Docker (Docker Desktop or Colima), kind, kubectl; Helm from Lab 2 |
+| **Cloud GPU (optional parts)** | one GPU instance in AWS that terminates itself after 55 minutes | an AWS account, GPU quota and a budget alarm; marked clearly in the lab that needs it |
 
 Most labs run on a laptop. When a concept only shows up on real GPUs, that lab says so at the top.
 
@@ -19,6 +19,7 @@ Most labs run on a laptop. When a concept only shows up on real GPUs, that lab s
 | Lab | What you'll do | Mode |
 |---|---|---|
 | [Lab 1: Schedule a GPU workload without a GPU](lab01-gpu-scheduling/) | Make a Pending GPU pod schedule, keep other pods off GPU nodes, cap a team's GPUs, rehearse a GPU fleet with KWOK | Laptop |
+| [Lab 2: Share one GPU between pods with DRA](lab02-gpu-sharing/) | Share one (mock) GPU through a ResourceClaim, take slices of it, then see time-slicing vs MPS on a real GPU | Laptop; optional AWS GPU |
 
 ## Where to start
 

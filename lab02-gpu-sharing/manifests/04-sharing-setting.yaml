@@ -1,0 +1,38 @@
+# Step 4: a shared claim that also says HOW to share: the driver's own settings (opaque config).
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-gpu-long
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.example.com
+    config:
+    - requests: ["gpu"]
+      opaque:
+        driver: gpu.example.com
+        parameters:
+          apiVersion: gpu.resource.example.com/v1alpha1
+          kind: GpuConfig
+          sharing:
+            strategy: TimeSlicing
+            timeSlicingConfig:
+              interval: Long
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: notebook-c
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36.1
+    command: ["sh", "-c", "env | grep GPU_DEVICE | sort; sleep 3600"]
+    resources:
+      claims:
+      - name: gpu
+  resourceClaims:
+  - name: gpu
+    resourceClaimName: shared-gpu-long

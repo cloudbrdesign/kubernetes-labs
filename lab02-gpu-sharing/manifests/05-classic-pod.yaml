@@ -1,0 +1,14 @@
+# Step 5: the Lab 1 way. No claim in the pod: a plain resources.limits request on the DRA device class.
+# Kubernetes creates the ResourceClaim for you (the DRAExtendedResource feature).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: classic-pod
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36.1
+    command: ["sh", "-c", "env | grep GPU_DEVICE | sort; sleep 3600"]
+    resources:
+      limits:
+        deviceclass.resource.kubernetes.io/gpu.example.com: 1

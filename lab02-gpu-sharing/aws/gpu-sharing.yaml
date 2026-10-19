@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Kubernetes Labs, Lab 2 (optional GPU part): one GPU instance runs a single-node
+  Kubernetes (k3s), the NVIDIA device plugin with time-slicing and then MPS, and
+  prints what it measured to the instance console. The instance terminates itself
+  after MaxMinutes. Delete this stack when you are done (python aws/aws_lab.py down).
+
+Parameters:
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    Description: Deep Learning Base GPU AMI (aws_lab.py resolves it from its public SSM parameter)
+  InstanceType:
+    Type: String
+    Default: g6e.xlarge
+  MaxMinutes:
+    Type: Number
+    Default: 55
+    MinValue: 10
+    MaxValue: 55
+    Description: Minutes after boot before the instance terminates itself
+  RootDeviceName:
+    Type: String
+    Default: /dev/sda1
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  K3sVersion:
+    Type: String
+    Default: v1.37.1+k3s1
+  HelmVersion:
+    Type: String
+    Default: v3.22.1
+  DevicePluginVersion:
+    Type: String
+    Default: 0.20.1
+  TorchImage:
+    Type: String
+    Default: pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime
+  TorchImageFallback:
+    Type: String
+    Default: pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
+
+Resources:
+  LabSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Kubernetes Labs lab02 - no inbound access
+      Tags:
+        - {Key: Project, Value: kubernetes-labs}
+
+  LabLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceType
+        InstanceInitiatedShutdownBehavior: terminate
+        BlockDeviceMappings:
+          - DeviceName: !Ref RootDeviceName
+            Ebs: {VolumeSize: 120, VolumeType: gp3, DeleteOnTermination: true}
+        SecurityGroupIds:
+          - !GetAtt LabSecurityGroup.GroupId
+        MetadataOptions:
+          HttpTokens: required
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - {Key: Project, Value: kubernetes-labs}
+              - {Key: Name, Value: kubernetes-labs-lab02}
+          - ResourceType: volume
+            Tags:
+              - {Key: Project, Value: kubernetes-labs}
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Hard time limit first, so it applies even if a later step fails (and again on every boot).
+            mkdir -p /var/lib/cloud/scripts/per-boot
+            printf '#!/bin/bash\nshutdown -h +${MaxMinutes} "lab02 time limit reached"\n' > /var/lib/cloud/scripts/per-boot/lab02-time-limit.sh
+            chmod +x /var/lib/cloud/scripts/per-boot/lab02-time-limit.sh
+            /var/lib/cloud/scripts/per-boot/lab02-time-limit.sh
+            export HOME=/root
+            T0=$(date +%s)
+            log()  { echo "LAB02| $*" | tee -a /root/lab02.log > /dev/console; }
+            logc() { tag=$1; shift; "$@" 2>&1 | while IFS= read -r l; do log "$tag| $l"; done; }
+            el()   { echo $(( $(date +%s) - T0 ))s; }
+            log "START"
+            log "gpu=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>&1)"
+            log "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1)"
+            log "container_toolkit=$(nvidia-ctk --version 2>/dev/null | head -1)"
+            log "os=$(. /etc/os-release && echo $PRETTY_NAME)"
+
+            # 1. Single-node Kubernetes (k3s) using the NVIDIA container runtime by default
+            curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION='${K3sVersion}' INSTALL_K3S_EXEC='--default-runtime nvidia --write-kubeconfig-mode 644' sh - > /root/k3s-install.log 2>&1
+            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+            for i in $(seq 1 60); do kubectl get nodes 2>/dev/null | grep -q ' Ready' && break; sleep 5; done
+            log "k3s=$(k3s --version | head -1) ready_after=$(el)"
+            logc nodes kubectl get nodes -o wide
+
+            # 2. Helm and the NVIDIA device plugin, time-slicing: 4 replicas per GPU
+            curl -sfL https://get.helm.sh/helm-${HelmVersion}-linux-amd64.tar.gz | tar xz -C /tmp && cp /tmp/linux-amd64/helm /usr/local/bin/
+            log "helm=$(helm version --short)"
+            helm repo add nvdp https://nvidia.github.io/k8s-device-plugin > /dev/null && helm repo update > /dev/null
+            cat > /root/ts.yaml <<'YAML'
+            config:
+              default: timeslice
+              map:
+                timeslice: |-
+                  version: v1
+                  sharing:
+                    timeSlicing:
+                      resources:
+                      - name: nvidia.com/gpu
+                        replicas: 4
+                mps: |-
+                  version: v1
+                  sharing:
+                    mps:
+                      resources:
+                      - name: nvidia.com/gpu
+                        replicas: 4
+            gfd:
+              enabled: true
+            YAML
+            logc helm helm upgrade -i nvdp nvdp/nvidia-device-plugin --version ${DevicePluginVersion} -n nvidia-device-plugin --create-namespace -f /root/ts.yaml --wait --timeout 10m
+            for i in $(seq 1 60); do c=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}'); [ -n "$c" ] && [ "$c" != "0" ] && break; sleep 5; done
+            log "ts_allocatable_nvidia.com/gpu=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}') after=$(el)"
+            sleep 20
+            logc ts_labels sh -c "kubectl get node -o json | grep -E '\"nvidia.com/gpu\.(count|replicas|product|sharing-strategy|memory)\"'"
+            logc ts_pods kubectl get pods -n nvidia-device-plugin
+
+            # 3. Pull the PyTorch image once (pinned tag, fallback tag)
+            IMG='${TorchImage}'
+            if ! k3s ctr images pull docker.io/$IMG > /root/pull.log 2>&1; then IMG='${TorchImageFallback}'; k3s ctr images pull docker.io/$IMG >> /root/pull.log 2>&1 || log "pull=failed $(tail -c 200 /root/pull.log)"; fi
+            log "torch_image=$IMG pulled_after=$(el)"
+
+            mkpod() {  # name, python code
+            cat <<YAML | kubectl apply -f - > /dev/null
+            apiVersion: v1
+            kind: Pod
+            metadata: {name: $1, labels: {app: lab02}}
+            spec:
+              restartPolicy: Never
+              containers:
+              - name: app
+                image: $IMG
+                imagePullPolicy: IfNotPresent
+                command: ["python", "-c", "$2"]
+                resources:
+                  limits: {nvidia.com/gpu: 1}
+            YAML
+            }
+            GB='1024**3'
+            INFO="import torch,time; f,t=torch.cuda.mem_get_info(); print('device', torch.cuda.get_device_name(0), 'free_GiB', round(f/$GB,1), 'total_GiB', round(t/$GB,1), flush=True); time.sleep(600)"
+
+            # 4. Time-slicing: five pods ask for one GPU each; four replicas exist
+            for p in share-1 share-2 share-3 share-4 share-5; do mkpod $p "$INFO"; done
+            sleep 60
+            logc ts_share kubectl get pods -l app=lab02 -o wide
+            for p in share-1 share-2 share-3 share-4; do log "ts_log_$p=$(kubectl logs $p 2>&1 | head -1)"; done
+            logc ts_share5_events sh -c "kubectl describe pod share-5 | sed -n '/Events:/,\$p'"
+            kubectl delete pod -l app=lab02 --wait=true > /dev/null
+
+            # 5. Time-slicing: no memory isolation. hog takes 80% of the memory, then victim asks for 20% (less than a quarter).
+            HOG="import torch,time; f,t=torch.cuda.mem_get_info(); n=int(t*0.8); x=torch.empty(n, dtype=torch.uint8, device='cuda'); f2,_=torch.cuda.mem_get_info(); print('hog allocated_GiB', round(n/$GB,1), 'free_after_GiB', round(f2/$GB,1), flush=True); time.sleep(600)"
+            VICTIM="import torch; f,t=torch.cuda.mem_get_info(); print('victim sees free_GiB', round(f/$GB,1), 'of', round(t/$GB,1), flush=True); n=int(t*0.2)\ntry:\n  x=torch.empty(n, dtype=torch.uint8, device='cuda'); print('victim allocated_GiB', round(n/$GB,1))\nexcept Exception as e:\n  print('victim FAILED to allocate', round(n/$GB,1), 'GiB:', type(e).__name__, str(e).splitlines()[0][:160])"
+            mkpod hog "$HOG"; sleep 40
+            mkpod victim "$VICTIM"; sleep 40
+            logc ts_mem_pods kubectl get pods -l app=lab02 -o wide
+            logc ts_hog kubectl logs hog
+            logc ts_victim kubectl logs victim
+            logc ts_nvidia_smi nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+            kubectl delete pod -l app=lab02 --wait=true > /dev/null
+
+            # 6. MPS: same 4 replicas, but the MPS daemon caps each client's memory
+            sed -i 's/default: timeslice/default: mps/' /root/ts.yaml
+            logc helm_mps helm upgrade -i nvdp nvdp/nvidia-device-plugin --version ${DevicePluginVersion} -n nvidia-device-plugin -f /root/ts.yaml --wait --timeout 10m
+            sleep 60
+            logc mps_pods kubectl get pods -n nvidia-device-plugin
+            log "mps_allocatable_nvidia.com/gpu=$(kubectl get node -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}')"
+            logc mps_labels sh -c "kubectl get node -o json | grep -E '\"nvidia.com/gpu\.(replicas|product|sharing-strategy)\"'"
+            mkpod hog "$HOG"; sleep 60
+            mkpod victim "$VICTIM"; sleep 40
+            logc mps_mem_pods kubectl get pods -l app=lab02 -o wide
+            logc mps_hog kubectl logs hog
+            logc mps_victim kubectl logs victim
+            logc mps_hog_events sh -c "kubectl describe pod hog | sed -n '/Events:/,\$p' | tail -5"
+            log "DONE after=$(el)"
+
+  LabInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LabLaunchTemplate
+        Version: !GetAtt LabLaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref SubnetId
+
+Outputs:
+  InstanceId:
+    Value: !Ref LabInstance
